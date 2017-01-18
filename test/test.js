@@ -21,7 +21,7 @@ function newTestFileName(type) {
 }
 
 function getFilepath(fname) {
-  return path.join('test', 'assets', fname)
+  return path.join('test', fname)
 }
 
 
