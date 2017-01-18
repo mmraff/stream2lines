@@ -8,6 +8,7 @@ A node.js module for extracting lines of text from a readable stream.
 - Allows choice of character set encoding
 - Allows choice of end-of-line marker recognition
 - Allows auto-destruction of source stream (where applicable)
+- No dependencies
 
 ## Install
 
