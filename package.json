@@ -1,6 +1,6 @@
 {
   "name": "stream2lines",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Streams2-style text line reader",
   "license": "MIT",
   "author": {
