@@ -1,6 +1,8 @@
 var assert = require('assert')
   , events = require('events')
   , fs = require('fs')
+  , http = require('http')
+  , net = require('net')
   , stream = require('stream')
   , util = require('util')
 
@@ -70,7 +72,7 @@ function LineReader(rs, options) {
     self.close()
   }
 
-  // This is only applicable when rs is instance of fs.ReadStream or net.Socket
+  // This is only applicable when rs is/has instance of fs.ReadStream or net.Socket
   function onStreamClose() {
     if (!srcEnded) {
       if (destroySrc) rs.read() // drain anything left in the internal buffer of rs
@@ -87,6 +89,8 @@ function LineReader(rs, options) {
     rs.removeListener('readable', onStreamReadable)
     if (!srcError) rs.removeListener('error', onStreamError)
     if (destroySrc) {
+      //var src = (rs instanceof http.IncomingMessage) ? rs.socket : rs
+      //if (typeof src.destroy == 'function') src.destroy()
       if (typeof rs.destroy == 'function') rs.destroy()
       //else console.log("line-reader.close: this stream doesn't have destroy()") // DEBUG ONLY
     }
@@ -160,7 +164,12 @@ function LineReader(rs, options) {
     .once('error', onStreamError)
     .once('readable', onStreamReadable)
 
-  if (destroySrc || rs.autoClose) rs.once('close', onStreamClose)
+  if (destroySrc || rs.autoClose) {
+    // http.IncomingMessage 'close' event found to be completely unreliable (in v.0.12)!
+    if (rs instanceof http.IncomingMessage)
+      rs.socket.once('close', onStreamClose)
+    else rs.once('close', onStreamClose)
+  }
 }
 
 util.inherits(LineReader, events.EventEmitter)
@@ -254,7 +263,10 @@ module.exports = function(rs, options) {
       "Invalid autoDestroySource option value: " + options.autoDestroySource)
     destroySrc = options.autoDestroySource
     // But we won't be fooled into recklessness
-    if (destroySrc && !(rs instanceof fs.ReadStream || rs instanceof net.Socket))
+    if (destroySrc &&
+        !(rs instanceof fs.ReadStream ||
+          rs instanceof net.Socket ||
+          rs instanceof http.IncomingMessage))
       // This covers process.stdin, which is a tty.ReadStream
       destroySrc = false
   }

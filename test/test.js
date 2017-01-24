@@ -1,16 +1,22 @@
 // Built-ins
 var crypto = require('crypto')
-var fs = require('fs')
-var path = require('path')
-var stream = require('stream')
+  , fs = require('fs')
+  , http = require('http')
+  , net = require('net')
+  , path = require('path')
+  , spawn = require('child_process').spawn
+  , stream = require('stream')
 // 3rd party
-var expect = require('chai').expect
-var litGib = require('literal-gibberish')
-var litGibXform = require('./litgib-unicode-xform.js')
+  , expect = require('chai').expect
+  , litGib = require('literal-gibberish')
+  , litGibXform = require('./lib/litgib-unicode-xform.js')
+  , rimraf = require('rimraf')
 // The test subject
-var str2lns = require('../')
+  , str2lns = require('../')
 
 var typeCounts = {}
+  , tempDir = 'temp'
+  , killCmd = 'halt'
 
 function newTestFileName(type) {
   if (!type) type = 'default'
@@ -21,79 +27,28 @@ function newTestFileName(type) {
 }
 
 function getFilepath(fname) {
-  return path.join('test', 'assets', fname)
+  return path.join('test', tempDir, fname)
 }
 
-
-describe('stream2lines module tests', function() {
-
-  var fpathname, fileExists
-
-  afterEach('cleanup', function() {
-    if (fileExists) {
-      fs.unlink(fpathname, function(fsErr) {
-        if (fsErr) console.warn("WARNING: failed to delete", fpathname)
-      })
-      fileExists = false
-      fpathname = null
-    }
-  })
-
-  function runCoreReaderTest(rst, options, data, flags, next) {
-    var lnCount = 0
-    var endReached = false
-    var destroySrc = (options && 'autoDestroySource' in options) ?
-      options.autoDestroySource : false
-    var encoding = (options && 'encoding' in options) ?
-      options.encoding : null
-
-    // Workaround for encoding 'latin1' that doesn't exist in node < v6
-    // (Note that stream2lines handles this internally; but here we'll be
-    // comparing to a buffer that's external to the reader)
-    if (encoding === 'latin1' && !Buffer.isEncoding('latin1'))
-      encoding = 'binary'
-
-    str2lns(rst, options)
-      .once('end', function() {
-        // This shall emit 'end' only if the source stream did so; evidence
-        // will be completely consumed buffer in source stream
-        expect(rst._readableState.length).to.eql(0)
-        expect(rst._readableState.buffer.length).to.eql(0)
-        // and this line count will be same as what was written to source file
-        expect(this.lineCount()).to.eql(data.lines.length)
-        endReached = true
-      })
-      .once('close', function() {
-        // Here we know: if there was an error, there's no handler,
-        // so it was thrown, and we didn't get here.
-        if (!endReached) {
-          expect(this.lineCount()).to.be.below(data.lines.length)
-        }
-        if ((endReached && rst.autoClose) || destroySrc) {
-          expect(rst._readableState.length).to.eql(0)
-          expect(rst._readableState.buffer.length).to.eql(0)
-          if ('fd' in rst) // it's not there in a http.IncomingMessage
-            process.nextTick(function() {
-              expect(rst.fd).to.be.null
-              next()
-            })
-        }
-        else next()
-      })
-      .on('readable', function() {
-        var text, ln
-        while ((text = this.read()) != null) {
-          ln = data.lines[lnCount++]
-          expect(text).to.eql(data.buffer.toString(encoding, ln.start, ln.end))
-          expect(this.lineCount()).to.eql(lnCount)
-
-          if (flags.testClose) {
-            this.close()
-            break
-          }
-        }
-      })
+before(function() {
+  try { fs.mkdirSync(path.join('test', tempDir)) }
+  catch (mkdErr) {
+    if (mkdErr.code !== 'EEXIST') throw mkdErr
   }
+})
+
+after(function(done) {
+  rimraf(path.join('test', tempDir), function(rmErr) {
+    if (rmErr) {
+      console.warn("Failed to remove the test temporary directory...")
+      console.warn(rmErr)
+      // Oh well, not so important, considering it's after the tests
+    }
+    done(rmErr)
+  })
+})
+
+describe('stream2lines module basic tests', function() {
 
   it('should export a function', function() {
     expect(str2lns).to.be.a('function')
@@ -288,21 +243,94 @@ describe('stream2lines module tests', function() {
       }
     })
   })
+}) // End of basic tests
+
+// This is used by tests using fs.ReadStream, http.IncomingMessage, and net.Socket
+function runCoreReaderTest(rst, options, data, flags, next) {
+  var lnCount = 0
+  var endReached = false
+  var destroySrc = (options && 'autoDestroySource' in options) ?
+    options.autoDestroySource : false
+  var encoding = (options && 'encoding' in options) ?
+    options.encoding : null
+
+  // Workaround for encoding 'latin1' that doesn't exist in node < v6
+  // (Note that stream2lines handles this internally; but here we'll be
+  // comparing to a buffer that's external to the reader)
+  if (encoding === 'latin1' && !Buffer.isEncoding('latin1'))
+    encoding = 'binary'
+
+  str2lns(rst, options)
+    .once('end', function() {
+      // This shall emit 'end' only if the source stream did so; evidence
+      // will be completely consumed buffer in source stream
+      expect(rst._readableState.length).to.eql(0)
+      expect(rst._readableState.buffer.length).to.eql(0)
+      // and this line count will be same as what was written to source file
+      expect(this.lineCount()).to.eql(data.lines.length)
+      endReached = true
+    })
+    .once('close', function() {
+      // Here we know: if there was an error, there's no handler,
+      // so it was thrown, and we didn't get here.
+      if (!endReached) {
+        // Maybe this is questionable - was close() called on the last line,
+        // before read() returned null that triggers 'end' event?
+        // Answer: just don't set up a test to produce that condition!
+        expect(this.lineCount()).to.be.below(data.lines.length)
+      }
+      if ((endReached && rst.autoClose) || destroySrc) {
+        // Yes, it's bad form to refer to 3rd-party object properties that have
+        // underscored names, because that's a legacy convention that means 'private',
+        // or at least undocumented, and such properties can't be relied on to
+        // be in future versions of the 3rd-party module...
+        // but for that matter, 'autoClose' is not documented as a property of a
+        // ReadStream.
+        // However, we need *something* to help us doublecheck the state here.
+        if (rst._readableState) {
+          expect(rst._readableState.length).to.eql(0)
+          expect(rst._readableState.buffer.length).to.eql(0)
+        }
+        // Disposal of fd has been seen to take some time...
+        process.nextTick(function() {
+          // DANGER here: if the http.IncomingMessage is the response to a request
+          // that included an explicit http.Agent, rst.socket._handle will still
+          // be non-null, and it will have fd with a live file descriptor.
+          var src = (rst instanceof http.IncomingMessage) ? rst.socket._handle : rst
+          if (src && 'fd' in src) expect(src.fd).to.be.null
+          next()
+        })
+      }
+      else next()
+    })
+    .on('readable', function() {
+      var text, ln
+      while ((text = this.read()) != null) {
+        ln = data.lines[lnCount++]
+        expect(text).to.eql(data.buffer.toString(encoding, ln.start, ln.end))
+        expect(this.lineCount()).to.eql(lnCount)
+
+        if (flags.testClose) {
+          this.close()
+          break
+        }
+      }
+    })
+}
+
+describe('stream2lines module with fs.ReadStream', function() {
 
   it('should allow user to stop the flow and disengage ' +
-     'before the source is exhausted', function(done) { // Give close() a workout
-
-    fpathname = getFilepath(newTestFileName())
+     'before the source is exhausted', function(done) { // Exercise close()
 
     litGib(function(lgErr, data) { // default 'ascii' with 'lf'
       if (lgErr) throw lgErr
 
+      var fpathname = getFilepath(newTestFileName())
       var options = { encoding: 'ascii', eolMatch: 'lf' }
 
       fs.writeFile(fpathname, data.buffer, function(fsErr) {
         if (fsErr) throw fsErr
-
-        fileExists = true
 
         var rst = fs.createReadStream(fpathname)
         runCoreReaderTest(rst, options, data, { testClose: true }, done)
@@ -310,6 +338,7 @@ describe('stream2lines module tests', function() {
     })
   })
 
+  // The following represents a matrix of tests, encoding vs. eolMatch
   var allEolMatches = str2lns.eolMatches('utf8')
   var validEncodings = str2lns.encodings()
   validEncodings.forEach(function(enc) {
@@ -382,14 +411,13 @@ describe('stream2lines module tests', function() {
   it("should destroy non-autoClose source stream when "
      + "option 'autoDestroySource' is set", function(done) {
 
-    fpathname = getFilepath(newTestFileName())
-
     litGib({ size: 4096 }, function(lgErr, data) {
       if (lgErr) throw lgErr
 
+      var fpathname = getFilepath(newTestFileName())
+
       fs.writeFile(fpathname, data.buffer, function(fsErr) {
         if (fsErr) throw fsErr
-        fileExists = true
 
         var rst = fs.createReadStream(fpathname, { autoClose: false })
         str2lns(rst, { autoDestroySource: true })
@@ -410,14 +438,13 @@ describe('stream2lines module tests', function() {
   it("should NOT destroy non-autoClose source stream when "
      + "option 'autoDestroySource' is NOT set", function(done) {
 
-    fpathname = getFilepath(newTestFileName())
-
     litGib({ size: 4096 }, function(lgErr, data) {
       if (lgErr) throw lgErr
 
+      var fpathname = getFilepath(newTestFileName())
+
       fs.writeFile(fpathname, data.buffer, function(fsErr) {
         if (fsErr) throw fsErr
-        fileExists = true
 
         var rst = fs.createReadStream(fpathname, { autoClose: false })
         str2lns(rst, { autoDestroySource: false })
@@ -435,6 +462,252 @@ describe('stream2lines module tests', function() {
       })
     })
   })
+})
 
+describe('stream2lines module with http.IncomingMessage', function() {
+
+  var serverPort
+    , serverProc
+    , litGibData
+    , fname = newTestFileName()
+    , endFunc = function() { throw new Error("Server aborted!") }
+
+  function closeServer() {
+    http.get({
+      port: serverPort,
+      path: '/?' + killCmd
+    })
+  }
+
+  before(function(done) {
+    var spawnOpts = { detached: true }
+    serverProc = spawn('node', ['test/lib/test-http-server.js'], spawnOpts)
+      .on('close', function(code) {
+        if (code) console.log('test-http-server exited with error', code)
+        endFunc()
+      })
+    serverProc.stderr.on('data', function(data) {
+      console.log('test-http-server stderr output:', data.toString())
+    })
+    serverProc.stdout.on('data', function(data) {
+      var matches = data.toString().match(/^LISTENING ON (.+)/)
+      if (!matches) return
+
+      serverPort = matches[1]
+
+      // Get some gibberish and write a corresponding file to use for all tests
+      // in this group
+      litGib({ size: 65 * 1024 }, function(lgErr, data) { // default 'ascii' with 'lf'
+        if (lgErr) throw lgErr
+
+        litGibData = data
+
+        var fpathname = getFilepath(fname)
+
+        fs.writeFile(fpathname, data.buffer, function(fsErr) {
+          if (fsErr) throw fsErr
+          done()
+        })
+      })
+    })
+  })
+
+  after(function(done) {
+    if (serverPort) endFunc = done
+    closeServer()
+  })
+
+  it('should work correctly with defaults', function(done) {
+
+    var httpOptions = {
+      port: serverPort,
+      path: '/?asset=' + fname
+    }
+    var readerOptions = { encoding: 'ascii' }
+
+    http.get(httpOptions, function(res) {
+      //res.once('close', function() { console.log('http response 1 close event') })
+      //  .once('end', function() { console.log('http response 1 end event') })
+      runCoreReaderTest(res, readerOptions, litGibData, {}, done) // function(err) {
+      //  console.log("Reader test 1 callback follow-up")
+      //  done(err)
+      //})
+    })
+  })
+
+  it('should close source stream when given option autoDestroySource', function(done) {
+
+    var httpOptions = {
+      port: serverPort,
+      headers: { 'Connection': 'keep-alive' },
+      path: '/?asset=' + fname
+    }
+    var readerOptions = { encoding: 'ascii', autoDestroySource: true }
+
+    http.get(httpOptions, function(res) {
+      //res.once('close', function() { console.log('http response 2 close event') })
+      //  .once('end', function() { console.log('http response 2 end event') })
+      runCoreReaderTest(res, readerOptions, litGibData, {}, done) // function(err) {
+      //  console.log("Reader test 2 callback follow-up")
+      //  done(err)
+      //})
+    })
+  })
+
+  it('should allow user to stop the flow and disengage ' +
+     'before the source is exhausted', function(done) { // Exercise close()
+
+    var httpOptions = {
+      port: serverPort,
+      path: '/?asset=' + fname
+    }
+    var readerOptions = { encoding: 'ascii' }
+
+    http.get(httpOptions, function(res) {
+      //res.once('close', function() { console.log('http response 3 close event') })
+      //  .once('end', function() { console.log('http response 3 end event') })
+      runCoreReaderTest(res, readerOptions, litGibData, { testClose: true }, done)
+    })
+  })
+
+  it('should allow user to close early and autoDestroySource', function(done) {
+
+    var httpOptions = {
+      port: serverPort,
+      path: '/?asset=' + fname
+    }
+    var readerOptions = { encoding: 'ascii', autoDestroySource: true }
+
+    http.get(httpOptions, function(res) {
+      // NOTE: this is *the*only*test from which I've seen the 'close' event from http.IncomingMessage
+      //res.once('close', function() { console.log('http response 4 close event') })
+      //  .once('end', function() { console.log('http response 4 end event') })
+      runCoreReaderTest(res, readerOptions, litGibData, { testClose: true }, done)
+    })
+  })
+})
+
+describe('stream2lines module with net.Socket', function() {
+
+  var serverPort
+    , serverProc
+    , litGibData
+    , fname = newTestFileName()
+    , endFunc = function() { throw new Error("Server aborted!") }
+
+  function closeServer() {
+    net.connect(serverPort, function() {
+      this.end(killCmd)
+    })
+    // DEBUG ONLY:
+/*    .on('data', function(data) {
+        var res = data.toString()
+        console.log("On client.write('"+killCmd+"'), server says", res)
+      })
+*/
+  }
+
+  before(function(done) {
+    var spawnOpts = { detached: true }
+    serverProc = spawn('node', ['test/lib/test-tcp-server.js'], spawnOpts)
+      .on('close', function(code) {
+        if (code) console.error('test-tcp-server exited with error', code)
+        endFunc()
+      })
+      .on('error', function(err) {
+        console.error('Spawned tcp server process emitted error')
+        throw err
+      })
+    serverProc.stderr.on('data', function(data) {
+      console.error('test-tcp-server stderr output:\n', data.toString())
+    })
+    serverProc.stdout.on('data', function(data) {
+      var matches = data.toString().match(/^LISTENING ON (.+)/)
+      if (!matches) return
+
+      serverPort = matches[1]
+
+      // Get some gibberish and write a corresponding file to use for all tests
+      // in this group
+      litGib({ size: 65 * 1024 }, function(lgErr, data) { // default 'ascii' with 'lf'
+        if (lgErr) throw lgErr
+
+        litGibData = data
+
+        var fpathname = getFilepath(fname)
+
+        fs.writeFile(fpathname, data.buffer, function(fsErr) {
+          if (fsErr) throw fsErr
+          done()
+        })
+      })
+    })
+  })
+
+  after(function(done) {
+    if (serverPort) endFunc = done
+    closeServer()
+  })
+
+  it('should work correctly with defaults', function(done) {
+
+    net.connect(serverPort, function() {
+      var readerOpts = { encoding: 'ascii' }
+      this.write('asset='+fname+'\n')
+      runCoreReaderTest(this, readerOpts, litGibData, {}, done) //function(err) {
+      //  console.log("Reader test 1 callback follow-up")
+      //  done(err)
+      //})
+    })//.once('close', function() { console.log('tcp response 1 close event') })
+      //.once('end', function() { console.log('tcp response 1 end event') })
+  })
+
+  it('should close source stream when given option autoDestroySource', function(done) {
+
+    net.connect(serverPort, function() {
+      var readerOpts = { encoding: 'ascii', autoDestroySource: true }
+      this.write('asset='+fname+'\n')
+      runCoreReaderTest(this, readerOpts, litGibData, {}, done) //function(err) {
+      //  console.log("Reader test 2 callback follow-up")
+      //  done(err)
+      //})
+    })//.once('close', function() { console.log('tcp response 2 close event') })
+      //.once('end', function() { console.log('tcp response 2 end event') })
+      .setKeepAlive(true, 1000) // for behavior like autoClose:false
+  })
+
+  it('should allow user to stop the flow and disengage ' +
+     'before the source is exhausted', function(done) { // Exercise close()
+
+    net.connect(serverPort, function() {
+      var sock = this
+        , readerOpts = { encoding: 'ascii' }
+      sock.write('asset='+fname+'\n')
+      runCoreReaderTest(sock, readerOpts, litGibData, { testClose: true }, function(err) {
+        //console.log("Reader test 3 callback follow-up")
+        sock.end()
+        done(err)
+      })
+    })//.once('close', function() { console.log('tcp response 3 close event') })
+      //.once('end', function() { console.log('tcp response 3 end event') })
+      .setKeepAlive(true, 1000) // for behavior like autoClose:false
+  })
+
+  it('should allow user to close early and autoDestroySource', function(done) {
+
+    net.connect(serverPort, function() {
+      var sock = this
+        , readerOpts = { encoding: 'ascii', autoDestroySource: true }
+      sock.write('asset='+fname+'\n')
+      runCoreReaderTest(sock, readerOpts, litGibData, { testClose: true }, done) //function(err) {
+      //  console.log("Reader test 4 callback follow-up")
+        // Tests showed that there was no error here, and sock object in good
+        // condition (destroyed, of course), even with later ECONNREFUSED error.
+      //  done(err)
+      //})
+    })//.once('close', function() { console.log('tcp response 4 close event') })
+      //.once('end', function() { console.log('tcp response 4 end event') })
+      .setKeepAlive(true, 1000) // for behavior like autoClose:false
+  })
 })
 

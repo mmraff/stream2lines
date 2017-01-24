@@ -1,6 +1,6 @@
 {
   "name": "stream2lines",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Streams2-style text line reader",
   "license": "MIT",
   "author": {
@@ -21,7 +21,8 @@
   "devDependencies": {
     "chai": "^3.4",
     "literal-gibberish": "1.0.2",
-    "mocha": "^2.5"
+    "mocha": ">=2.5",
+    "rimraf": "^2.5.4"
   },
   "scripts": {
     "test": "mocha"
