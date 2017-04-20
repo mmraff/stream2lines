@@ -93,15 +93,16 @@ Factory function. Returns a **stream2lines** LineReader instance.
     markers '\u2028' and '\u2029'
 
     Values in uppercase are also recognized.  
-    The default `eolMatch` and invalid values depend on the chosen `encoding`:  
-    | `encoding` | default `eolMatch` | invalid `eolMatch` values |
-    |------------|--------------------|---------------------------|
-     `'ascii'`   | `'7bit'`           | `'iso8859'`, `'all'`
-     `'binary'`  | `'7bit'`           | `'iso8859'`, `'all'`
-     `'latin1'`  | `'iso8859'`        | `'all'`
-     `'utf8'`    | `'all'`            | 
-     `'utf16le'` | `'all'`            | 
-     `'ucs2'`    | `'all'`            | 
+    The default `eolMatch` and invalid values depend on the chosen `encoding`. See table below.
+### Encodings and EOL Matching
+    | `encoding` | default `eolMatch` | invalid `eolMatch` values |  
+    |------------|--------------------|---------------------------|  
+     `'ascii'`   | `'7bit'`           | `'iso8859'`, `'all'`  
+     `'binary'`  | `'7bit'`           | `'iso8859'`, `'all'`  
+     `'latin1'`  | `'iso8859'`        | `'all'`  
+     `'utf8'`    | `'all'`            |  
+     `'utf16le'` | `'all'`            |  
+     `'ucs2'`    | `'all'`            |  
 
     If no options are given to the module function, the applied `eolMatch` will
     be `'all'`, because the default encoding is `'utf8'`.
